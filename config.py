@@ -2,7 +2,7 @@ from pathlib import Path
 
 class Config:
     # --- PATHS ---
-    ROOT_FOLDER = Path(r"C:\Users\jonis\Documents\DVDFab\StreamFab\Output\Netflix\The Blacklist")
+    ROOT_FOLDER = Path(r"C:\Users\USERNAME\Source folder")
     OUTPUT_ROOT = Path(__file__).parent / "MKV_output"
     MKVMERGE_PATH = Path(r"C:\Program Files\MKVToolNix\mkvmerge.exe")
     LOG_FILE = Path(__file__).parent / "process_log.txt"
@@ -23,4 +23,5 @@ class Config:
         'de': ['ger', 'German'], 'fr': ['fre', 'French'], 'es': ['spa', 'Spanish'],
         'no': ['nor', 'Norwegian'], 'da': ['dan', 'Danish'], 'ru': ['rus', 'Russian'],
         'it': ['ita', 'Italian'], 'ja': ['jpn', 'Japanese'], 'zh-cn': ['chi', 'Chinese']
+
     }
