@@ -20,8 +20,8 @@ crossbeam-channel = "0.5"
 ctrlc = "3.4"
 
 [profile.release]
-opt-level = 3
+opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
-panic = "abort"
+# panic = "abort" # Removed to reduce false positives (Wacatac.B!ml detection)
