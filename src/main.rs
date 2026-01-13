@@ -41,19 +41,16 @@ fn draw_panel(title: &str, content: &[String], color_func: fn(&str) -> console::
     println!("{}", color_func(&format!("├{}┤", horiz)));
 
     // Content
+    let inner_width = width.saturating_sub(4); // width - (2 borders + 2 spaces)
     for line in content {
-        // Truncate or pad
-        let cleaner_line = console::strip_ansi_codes(line);
-        let len = cleaner_line.len();
-        if len > width - 4 {
-            // truncate - avoid panic if width is small
-            let safe_limit = (width).saturating_sub(5);
-            let slice = if safe_limit < line.len() { &line[..safe_limit] } else { line };
-            println!("{}", color_func(&format!("│ {} │", slice)));
-        } else {
-            let pad = width.saturating_sub(2).saturating_sub(len).saturating_sub(2); 
-            println!("{}", color_func(&format!("│ {}{} │", line, " ".repeat(pad))));
-        }
+        // pad_str handles visual width, ANSI codes, and truncation in one call
+        let processed_line = console::pad_str(
+            line, 
+            inner_width, 
+            console::Alignment::Left, 
+            Some("...")
+        );
+        println!("{}", color_func(&format!("│ {} │", processed_line)));
     }
     
     // Bottom
@@ -110,6 +107,8 @@ fn main() {
 
     if video_files.is_empty() {
         println!("\n{} {}", style("NO FILES FOUND").yellow().bold(), "Check your source directory.");
+        println!("{}", style("Press Enter to exit...").white().dim());
+        let _ = std::io::stdin().read_line(&mut String::new());
         return;
     }
 
@@ -150,8 +149,16 @@ fn main() {
            pb.set_message(format!("Activity: {}", display_name));
 
            match processor.process_file(video) {
-               ProcessStatus::Success => {
+               ProcessStatus::Success { subs, audios } => {
                    stats.lock().unwrap().0 += 1;
+                   if subs == 0 && audios == 0 {
+                       let _ = multiprogress.println(format!("{} {} -> {}", style("⚠️").yellow(), display_name, style("Merged without extra assets").dim()));
+                   } else {
+                       let sub_info = if subs > 0 { format!("{} subs", subs) } else { String::new() };
+                       let aud_info = if audios > 0 { format!("{} audios", audios) } else { String::new() };
+                       let info = vec![sub_info, aud_info].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(", ");
+                       let _ = multiprogress.println(format!("{} {} -> {}", SUCCESS, display_name, style(format!("Merged ({})", info)).green()));
+                   }
                },
                ProcessStatus::Skipped => {
                    stats.lock().unwrap().1 += 1;

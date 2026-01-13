@@ -1,6 +1,6 @@
 [package]
 name = "mkv_pro_manager"
-version = "1.0.2"
+version = "1.0.3"
 edition = "2021"
 
 [dependencies]

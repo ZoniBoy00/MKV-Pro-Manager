@@ -23,7 +23,7 @@ struct MediaInfo {
 }
 
 pub enum ProcessStatus {
-    Success,
+    Success { subs: usize, audios: usize },
     Skipped,
     Failed(String),
 }
@@ -170,7 +170,7 @@ impl Processor {
         let assets = find_matching_assets(video_path, &self.config);
 
         if self.config.dry_run {
-            return ProcessStatus::Success; 
+            return ProcessStatus::Success { subs: assets.subtitles.len(), audios: assets.audios.len() }; 
         }
 
         if let Err(e) = fs::create_dir_all(&target_dir) {
@@ -204,7 +204,7 @@ impl Processor {
                          for s in &assets.subtitles { let _ = fs::remove_file(s); }
                          for a in &assets.audios { let _ = fs::remove_file(a); }
                      }
-                     ProcessStatus::Success
+                     ProcessStatus::Success { subs: assets.subtitles.len(), audios: assets.audios.len() }
                 } else {
                     let err = String::from_utf8_lossy(&output.stderr);
                     ProcessStatus::Failed(err.trim().to_string())

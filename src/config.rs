@@ -65,9 +65,30 @@ pub fn load_config_interactive() -> Config {
     let config_path = get_config_path();
     
     // Attempt to load existing
-    if let Ok(content) = fs::read_to_string(&config_path) {
-        if let Ok(cfg) = toml::from_str(&content) {
-            return cfg;
+    if config_path.exists() {
+        match fs::read_to_string(&config_path) {
+            Ok(content) => {
+                match toml::from_str::<Config>(&content) {
+                    Ok(cfg) => return cfg,
+                    Err(e) => {
+                        println!("\n{} {} {}", 
+                            style("❌").red(), 
+                            style("Error parsing config.toml:").red().bold(),
+                            style(e).red()
+                        );
+                        println!("{}", style("Please check your config.toml or delete it to run the wizard again.").dim());
+                        std::process::exit(1);
+                    }
+                }
+            }
+            Err(e) => {
+                println!("\n{} {} {}", 
+                    style("❌").red(), 
+                    style("Error reading config.toml:").red().bold(),
+                    style(e).red()
+                );
+                std::process::exit(1);
+            }
         }
     }
 
