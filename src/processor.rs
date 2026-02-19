@@ -32,25 +32,28 @@ impl Processor {
     pub fn new(config: Config) -> Self {
         Self {
             config,
-            regex_series_standard: Regex::new(r"(?i)^(.*?)[\. \-_]+s(\d+)[\. \-_]*e\d+").unwrap(),
-            regex_series_x: Regex::new(r"(?i)^(.*?)[\. \-_]+(\d+)x\d+").unwrap(),
+            regex_series_standard: Regex::new(r"(?i)^(.*?)[\. \-_]+s(\d+)[\. \-_]*e(\d+)").unwrap(),
+            regex_series_x: Regex::new(r"(?i)^(.*?)[\. \-_]+(\d+)x(\d+)").unwrap(),
             regex_year: Regex::new(r"(?i)^(.*?)[\. \-_]+(\d{4})").unwrap(),
             regex_season_only: Regex::new(r"(?i)(?:season|s)[\. \-_]?(\d{1,2})").unwrap(),
         }
     }
 
     fn clean_title(&self, input: &str) -> String {
-        input.replace(['.', '_'], " ")
+        input.replace(['.', '_', '-'], " ")
             .split_whitespace()
+            .filter(|w| !w.starts_with('(') && !w.ends_with(')')) // Ignore trailing (2024) etc if caught
             .map(|w| {
                 let mut chars = w.chars();
                 match chars.next() {
-                    Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+                    Some(c) => c.to_uppercase().collect::<String>() + chars.as_str().to_lowercase().as_str(),
                     None => String::new(),
                 }
             })
             .collect::<Vec<_>>()
             .join(" ")
+            .trim()
+            .to_string()
     }
 
     fn parse_media_info(&self, path: &Path) -> MediaInfo {
@@ -191,8 +194,17 @@ impl Processor {
         }
 
         for audio in &assets.audios {
-            cmd.arg("--language").arg("0:eng") 
-               .arg("--track-name").arg("0:English")
+            let name = audio.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
+            let (iso, lang_name) = if name.contains("fin") || name.contains("suomi") {
+                ("fin", "Finnish")
+            } else if name.contains("eng") || name.contains("english") {
+                ("eng", "English")
+            } else {
+                ("eng", "English") // Default to English for now
+            };
+
+            cmd.arg("--language").arg(format!("0:{}", iso)) 
+               .arg("--track-name").arg(format!("0:{}", lang_name))
                .arg(audio);
         }
 

@@ -1,12 +1,15 @@
 use std::path::{Path, PathBuf};
 use regex::Regex;
+use once_cell::sync::Lazy;
 use crate::config::Config;
+
+static SXXEXX_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)s(\d+)e(\d+)").unwrap());
 
 /// Normalizes text for fingerprinting: lowercase alphanumeric only.
 fn get_fingerprint(text: &str) -> String {
     text.chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .map(|c| c.to_ascii_lowercase())
+        .filter(|c| c.is_alphanumeric())
+        .map(|c| c.to_lowercase().to_string())
         .collect()
 }
 
@@ -34,8 +37,6 @@ pub fn find_matching_assets(video_path: &Path, config: &Config) -> FoundAssets {
     
     let subtitles_subfolder = parent.join("Subtitles");
     if subtitles_subfolder.is_dir() { search_dirs.push(subtitles_subfolder); }
-
-    let sxxexx_re = Regex::new(r"(?i)s(\d+)e(\d+)").unwrap();
 
     for dir in search_dirs {
         let entries = match std::fs::read_dir(dir) {
@@ -65,7 +66,7 @@ pub fn find_matching_assets(video_path: &Path, config: &Config) -> FoundAssets {
             // This handles cases where video has more tags than sub, or vice versa.
             let is_match = if item_fingerprint.contains(&video_fingerprint) || video_fingerprint.contains(&item_fingerprint) {
                 true
-            } else if let (Some(v_cap), Some(i_cap)) = (sxxexx_re.captures(video_stem), sxxexx_re.captures(name)) {
+            } else if let (Some(v_cap), Some(i_cap)) = (SXXEXX_RE.captures(video_stem), SXXEXX_RE.captures(name)) {
                 v_cap[1] == i_cap[1] && v_cap[2] == i_cap[2]
             } else {
                 false
