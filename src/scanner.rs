@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use regex::Regex;
 use once_cell::sync::Lazy;
-use crate::config::Config;
+use crate::config::{Config, LANG_DATA};
 
 static SXXEXX_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)s(\d+)e(\d+)").unwrap());
 
@@ -11,6 +11,43 @@ fn get_fingerprint(text: &str) -> String {
         .filter(|c| c.is_alphanumeric())
         .map(|c| c.to_lowercase().to_string())
         .collect()
+}
+
+/// Strips common language-code suffixes (e.g., `.fin`, `_eng`, `.fi`) from
+/// a filename stem *for matching purposes only* — the original stem is
+/// kept intact for language detection.
+///
+/// This handles the common case where a subtitle file has a language tag
+/// that doesn't appear in the video filename, e.g.:
+///   video: `Riot.2015.1080p.BluRay.x264.YTS.mp4`
+///   sub:   `Riot.2015.fin.srt`          → stem `Riot.2015.fin` → `Riot.2015`
+fn strip_lang_suffix(stem: &str) -> String {
+    let lower = stem.to_lowercase();
+
+    for (_iso1, (iso3, _name)) in LANG_DATA.iter() {
+        // Check 3-letter code with various separators
+        for sep in &[".", "_", "-"] {
+            let pat = format!("{}{}", sep, iso3);
+            if lower.ends_with(&pat) {
+                let idx = stem.len().saturating_sub(pat.len());
+                return stem[..idx].to_string();
+            }
+        }
+    }
+
+    // Then check 2-letter codes (shorter, so check after 3-letter to avoid
+    // matching e.g. "fin" as just "fi" + "n" remnant)
+    for (iso1, (_iso3, _name)) in LANG_DATA.iter() {
+        for sep in &[".", "_", "-"] {
+            let pat = format!("{}{}", sep, iso1);
+            if lower.ends_with(&pat) && !lower.ends_with(&format!("{}{}", sep, _iso3)) {
+                let idx = stem.len().saturating_sub(pat.len());
+                return stem[..idx].to_string();
+            }
+        }
+    }
+
+    stem.to_string()
 }
 
 #[derive(Debug, Default)]
@@ -61,15 +98,34 @@ pub fn find_matching_assets(video_path: &Path, config: &Config) -> FoundAssets {
             }
 
             let item_fingerprint = get_fingerprint(item_stem);
-            
+
             // Match if one fingerprint is contained in the other, or if they share a common SxxExx
             // This handles cases where video has more tags than sub, or vice versa.
-            let is_match = if item_fingerprint.contains(&video_fingerprint) || video_fingerprint.contains(&item_fingerprint) {
+            let is_match = if item_fingerprint.contains(&video_fingerprint)
+                || video_fingerprint.contains(&item_fingerprint)
+            {
                 true
-            } else if let (Some(v_cap), Some(i_cap)) = (SXXEXX_RE.captures(video_stem), SXXEXX_RE.captures(name)) {
-                v_cap[1] == i_cap[1] && v_cap[2] == i_cap[2]
             } else {
-                false
+                // Fallback: subtitle filenames often have a language-code suffix
+                // (.fin, .eng, .fi, etc.) that the video filename doesn't contain.
+                // Strip it and try the match again.
+                let clean_stem = strip_lang_suffix(item_stem);
+                if clean_stem != item_stem {
+                    let clean_fp = get_fingerprint(&clean_stem);
+                    clean_fp.contains(&video_fingerprint)
+                        || video_fingerprint.contains(&clean_fp)
+                } else {
+                    false
+                }
+            } || {
+                // Also try SxxExx matching
+                if let (Some(v_cap), Some(i_cap)) =
+                    (SXXEXX_RE.captures(video_stem), SXXEXX_RE.captures(name))
+                {
+                    v_cap[1] == i_cap[1] && v_cap[2] == i_cap[2]
+                } else {
+                    false
+                }
             };
 
             if is_match {
