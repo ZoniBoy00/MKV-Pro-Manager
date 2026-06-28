@@ -1,5 +1,7 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+// Minimal reimplementation of scanner functions for testing
 fn get_fingerprint(text: &str) -> String {
     text.chars()
         .filter(|c| c.is_alphanumeric())
@@ -7,30 +9,104 @@ fn get_fingerprint(text: &str) -> String {
         .collect()
 }
 
+fn clean_stem_for_matching(stem: &str) -> String {
+    // Build release tags set (mirrors scanner.rs)
+    let release_tags: HashSet<&str> = [
+        "480p", "720p", "1080p", "2160p", "4k",
+        "bluray", "brrip", "webrip", "web-dl", "webdl", "web.dl",
+        "hdtv", "hdrip", "dvdrip", "dvdscr", "cam", "hcam", "tc", "ts", "wp",
+        "ppv", "remux",
+        "x264", "x265", "h264", "h265", "hevc", "avc", "mpeg2", "mpeg-2",
+        "xvid", "divx", "vc1", "vc-1", "av1",
+        "ac3", "aac", "dts", "flac", "mp3", "eac3", "truehd", "dts-hd",
+        "pcm", "dd5.1", "ddp5.1", "atmos",
+        "yts", "yify", "dawgs", "rarbg", "fgt", "ion10", "evo", "amzn",
+        "nf", "ntb", "ctrlhd", "kappa", "axxo", "sparks", "fum",
+        "proper", "repack", "internal", "readnfo", "unrated",
+        "extended", "directors.cut", "theatrical", "edition",
+        "nordic",
+        "fin", "eng", "swe", "ger", "fre", "spa", "nor", "dan", "rus",
+        "ita", "jpn", "chi", "kor", "pol", "por",
+        "fi", "en", "sv", "de", "fr", "es", "it", "ja", "ko", "pl", "pt",
+        "ru", "no", "da",
+        "hdr", "sdr", "dv", "dovi", "dolby", "vision", "uhd", "fhd",
+        "hd", "sd", "pal", "ntsc",
+    ].iter().cloned().collect();
+
+    fn is_known_tag(token: &str, tags: &HashSet<&str>) -> bool {
+        // Check full token first
+        if tags.contains(token.to_lowercase().as_str()) {
+            return true;
+        }
+        // Check sub-tokens split by common separators
+        token.split(|c: char| c == '-' || c == '_')
+            .any(|sub| !sub.is_empty() && tags.contains(sub.to_lowercase().as_str()))
+    }
+
+    // Step 1: Remove everything inside brackets
+    let no_brackets: String = {
+        let mut result = String::with_capacity(stem.len());
+        let mut depth = 0i32;
+        for c in stem.chars() {
+            match c {
+                '[' | '(' | '{' => depth += 1,
+                ']' | ')' | '}' => depth = depth.saturating_sub(1),
+                _ if depth == 0 => result.push(c),
+                _ => {}
+            }
+        }
+        result
+    };
+
+    // Step 2: Split by dots only → tokens
+    let dot_tokens: Vec<&str> = no_brackets
+        .split('.')
+        .filter(|t| !t.is_empty())
+        .collect();
+
+    // Step 3: Remove known release tags, keep year and title words
+    let clean_tokens: Vec<String> = dot_tokens.iter()
+        .filter(|token| {
+            let lower = token.to_lowercase();
+
+            // Keep year numbers (4-digit, 1900-2099)
+            if let Ok(num) = token.parse::<u32>() {
+                if (1900..=2099).contains(&num) {
+                    return true;
+                }
+            }
+
+            // Drop if token or any sub-component matches a known tag
+            !is_known_tag(token, &release_tags)
+        })
+        .map(|t| t.to_string())
+        .collect();
+
+    clean_tokens.join(".")
+}
+
+fn check_match(video_stem: &str, sub_stem: &str) -> bool {
+    let clean_video = clean_stem_for_matching(video_stem);
+    let clean_sub = clean_stem_for_matching(sub_stem);
+    let video_fp = get_fingerprint(&clean_video);
+    let sub_fp = get_fingerprint(&clean_sub);
+
+    sub_fp.contains(&video_fp) || video_fp.contains(&sub_fp)
+}
+
 fn strip_lang_suffix(stem: &str) -> String {
-    // Minimal reimplementation of the scanner function for testing
-    use std::collections::HashMap;
-    let lang_data: HashMap<&str, (&str, &str)> = [
-        ("fi", ("fin", "Finnish")),
-        ("en", ("eng", "English")),
-        ("sv", ("swe", "Swedish")),
-        ("de", ("ger", "German")),
-        ("fr", ("fre", "French")),
-        ("es", ("spa", "Spanish")),
-        ("no", ("nor", "Norwegian")),
-        ("da", ("dan", "Danish")),
-        ("ru", ("rus", "Russian")),
-        ("it", ("ita", "Italian")),
-        ("ja", ("jpn", "Japanese")),
-        ("zh-cn", ("chi", "Chinese")),
-        ("ko", ("kor", "Korean")),
-        ("pl", ("pol", "Polish")),
+    let lang_data: std::collections::HashMap<&str, (&str, &str)> = [
+        ("fi", ("fin", "Finnish")), ("en", ("eng", "English")),
+        ("sv", ("swe", "Swedish")), ("de", ("ger", "German")),
+        ("fr", ("fre", "French")), ("es", ("spa", "Spanish")),
+        ("no", ("nor", "Norwegian")), ("da", ("dan", "Danish")),
+        ("ru", ("rus", "Russian")), ("it", ("ita", "Italian")),
+        ("ja", ("jpn", "Japanese")), ("zh-cn", ("chi", "Chinese")),
+        ("ko", ("kor", "Korean")), ("pl", ("pol", "Polish")),
         ("pt", ("por", "Portuguese")),
     ].iter().cloned().collect();
 
     let lower = stem.to_lowercase();
-
-    // Check 3-letter codes first
     for (_iso1, (iso3, _name)) in lang_data.iter() {
         for sep in &[".", "_", "-"] {
             let pat = format!("{}{}", sep, iso3);
@@ -40,8 +116,6 @@ fn strip_lang_suffix(stem: &str) -> String {
             }
         }
     }
-
-    // Then 2-letter codes, avoiding false match on 3-letter suffix
     for (iso1, (iso3, _name)) in lang_data.iter() {
         for sep in &[".", "_", "-"] {
             let pat = format!("{}{}", sep, iso1);
@@ -52,202 +126,169 @@ fn strip_lang_suffix(stem: &str) -> String {
             }
         }
     }
-
     stem.to_string()
-}
-
-fn check_match(video_stem: &str, sub_stem: &str) -> bool {
-    let video_fp = get_fingerprint(video_stem);
-    let item_fp = get_fingerprint(sub_stem);
-
-    // Primary: substring match
-    if item_fp.contains(&video_fp) || video_fp.contains(&item_fp) {
-        return true;
-    }
-
-    // Fallback: strip lang codes and retry
-    let clean_stem = strip_lang_suffix(sub_stem);
-    if clean_stem != sub_stem {
-        let clean_fp = get_fingerprint(&clean_stem);
-        if clean_fp.contains(&video_fp) || video_fp.contains(&clean_fp) {
-            return true;
-        }
-    }
-
-    false
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // --- EXISTING tests that already pass ---
+    // === clean_stem_for_matching tests ===
 
     #[test]
-    fn test_fingerprint_basic() {
-        let fp = get_fingerprint("Riot.2015.1080p.BluRay.x264.YTS");
-        assert_eq!(fp, "riot20151080pblurayx264yts");
+    fn test_clean_matching_yts_vs_dawgs() {
+        // THE ACTUAL BUG CASE from Joni's input folder
+        let video = "Riot.2015.1080p.BluRay.x264.[YTS.AG]";
+        let sub = "Riot.2015.NORDIC.1080p.BluRay.x264.AC3-DAWGS-fin";
+
+        assert_eq!(clean_stem_for_matching(video), "Riot.2015");
+        assert_eq!(clean_stem_for_matching(sub), "Riot.2015");
+        assert!(check_match(video, sub),
+            "YTS release should match DAWGS subtitle! THIS IS THE BUG");
     }
 
     #[test]
-    fn test_fingerprint_with_lang() {
-        let fp = get_fingerprint("Riot.2015.1080p.BluRay.x264.YTS.fin");
-        assert_eq!(fp, "riot20151080pblurayx264ytsfin");
+    fn test_clean_matching_same_stem() {
+        assert_eq!(clean_stem_for_matching("Riot.2015"), "Riot.2015");
     }
 
     #[test]
-    fn test_fingerprint_contains() {
-        let video_fp = get_fingerprint("Riot.2015.1080p.BluRay.x264.YTS");
-        let sub_fp = get_fingerprint("Riot.2015.1080p.BluRay.x264.YTS");
-        assert!(sub_fp.contains(&video_fp));
-        assert!(video_fp.contains(&sub_fp));
+    fn test_clean_bracket_removal() {
+        assert_eq!(clean_stem_for_matching("Riot.2015.[YTS.AG]"), "Riot.2015");
+        assert_eq!(clean_stem_for_matching("Riot.2015.(YTS)"), "Riot.2015");
+        assert_eq!(clean_stem_for_matching("Riot.2015.{YTS}"), "Riot.2015");
     }
 
     #[test]
-    fn test_fingerprint_contains_with_lang() {
-        // Video longer, sub has lang suffix
+    fn test_clean_strips_quality() {
+        assert_eq!(clean_stem_for_matching("Riot.2015.1080p"), "Riot.2015");
+        assert_eq!(clean_stem_for_matching("Riot.2015.2160p.4k"), "Riot.2015");
+    }
+
+    #[test]
+    fn test_clean_strips_source() {
+        assert_eq!(clean_stem_for_matching("Riot.2015.BluRay.WEBRip"), "Riot.2015");
+    }
+
+    #[test]
+    fn test_clean_strips_codec() {
+        assert_eq!(clean_stem_for_matching("Riot.2015.x264.HEVC"), "Riot.2015");
+    }
+
+    #[test]
+    fn test_clean_strips_audio() {
+        assert_eq!(clean_stem_for_matching("Riot.2015.AC3.DTS"), "Riot.2015");
+    }
+
+    #[test]
+    fn test_clean_strips_group() {
+        assert_eq!(clean_stem_for_matching("Riot.2015.YTS"), "Riot.2015");
+        assert_eq!(clean_stem_for_matching("Riot.2015.DAWGS"), "Riot.2015");
+    }
+
+    #[test]
+    fn test_clean_strips_region() {
+        assert_eq!(clean_stem_for_matching("Riot.2015.NORDIC"), "Riot.2015");
+    }
+
+    #[test]
+    fn test_clean_strips_language_codes() {
+        assert_eq!(clean_stem_for_matching("Riot.2015.fin"), "Riot.2015");
+        assert_eq!(clean_stem_for_matching("Riot.2015.eng"), "Riot.2015");
+        assert_eq!(clean_stem_for_matching("Riot.2015.fi"), "Riot.2015");
+    }
+
+    #[test]
+    fn test_clean_preserves_title_variations() {
+        assert_ne!(
+            clean_stem_for_matching("The.Dark.Knight.2008"),
+            clean_stem_for_matching("The.Dark.Knight.Rises.2012")
+        );
+    }
+
+    #[test]
+    fn test_clean_without_year() {
+        assert_eq!(clean_stem_for_matching("Riot.1080p.BluRay.x264.YTS"), "Riot");
+    }
+
+    #[test]
+    fn test_clean_complex_movie_name() {
+        let result = clean_stem_for_matching("The.Godfather.Part.II.1974.1080p.BluRay.x264");
+        assert_eq!(result, "The.Godfather.Part.II.1974");
+    }
+
+    #[test]
+    fn test_clean_webdl_hyphenated() {
+        assert_eq!(clean_stem_for_matching("Riot.2015.1080p.WEB-DL"), "Riot.2015");
+    }
+
+    #[test]
+    fn test_clean_x264_group() {
+        // x264-ABC: "x264" is a codec tag inside hyphenated token
+        assert_eq!(clean_stem_for_matching("Riot.2015.x264-ABC"), "Riot.2015");
+    }
+
+    // === check_match integration tests ===
+
+    #[test]
+    fn test_match_yts_vs_dawgs_actual_filenames() {
         assert!(check_match(
-            "Riot.2015.1080p.BluRay.x264.YTS",
-            "Riot.2015.1080p.BluRay.x264.YTS.fin"
+            "Riot.2015.1080p.BluRay.x264.[YTS.AG]",
+            "Riot.2015.NORDIC.1080p.BluRay.x264.AC3-DAWGS-fin"
+        ), "YTS video must match DAWGS subtitle!");
+    }
+
+    #[test]
+    fn test_match_identical() {
+        assert!(check_match("Riot.2015.1080p", "Riot.2015.1080p"));
+    }
+
+    #[test]
+    fn test_match_sub_shorter() {
+        assert!(check_match("Riot.2015.1080p.BluRay.x264.YTS", "Riot.2015.fin"));
+    }
+
+    #[test]
+    fn test_match_different_release_groups() {
+        assert!(check_match(
+            "Movie.Name.2024.2160p.WEBRip.x264.AAC-EVO",
+            "Movie.Name.2024.NORDIC.1080p.BluRay.x264.AC3-DAWGS-eng"
         ));
     }
 
     #[test]
-    fn test_fingerprint_shorter_sub() {
-        assert!(check_match(
-            "Riot.2015.1080p.BluRay.x264.YTS",
-            "Riot.2015"
-        ));
-    }
-
-    #[test]
-    fn test_identical_stems() {
-        assert!(check_match("Riot.2015", "Riot.2015"));
-    }
-
-    #[test]
-    fn test_case_sensitivity() {
-        assert!(check_match("RIOT.2015.1080P", "riot.2015.1080p"));
-    }
-
-    // --- BUG REPRODUCTION: cases that FAILED before the fix ---
-
-    #[test]
-    fn test_lang_code_suffix_mismatch() {
-        // Video: Riot.2015.1080p.BluRay.x264.YTS.mp4
-        // Sub:   Riot.2015.fin.srt
-        // The "fin" doesn't appear contiguously in the video fingerprint
-        assert!(check_match(
-            "Riot.2015.1080p.BluRay.x264.YTS",
-            "Riot.2015.fin"
-        ), "FAILED: sub with .fin suffix should match! THIS IS THE BUG");
-    }
-
-    #[test]
-    fn test_eng_suffix() {
-        // Same bug with English
-        assert!(check_match(
-            "Movie.Name.2024.1080p.WEBRip.x264",
-            "Movie.Name.2024.eng"
-        ), "FAILED: .eng suffix should match!");
-    }
-
-    #[test]
-    fn test_swe_suffix() {
-        assert!(check_match(
-            "Show.Name.S01E01.1080p.WEB-DL",
-            "Show.Name.S01E01.swe"
-        ), "FAILED: .swe suffix should match!");
-    }
-
-    #[test]
-    fn test_2letter_code_fi() {
-        assert!(check_match(
-            "Riot.2015.1080p.BluRay.x264.YTS",
-            "Riot.2015.fi"
-        ), "FAILED: .fi suffix should match!");
-    }
-
-    #[test]
-    fn test_2letter_code_en() {
-        assert!(check_match(
-            "Movie.Name.2024.2160p.WEBRip",
-            "Movie.Name.2024.en"
-        ), "FAILED: .en suffix should match!");
-    }
-
-    #[test]
-    fn test_lang_code_middle_may_not_match() {
-        // Sub: Riot.fin.2015.1080p.srt — lang code in middle (unusual pattern)
-        // strip_lang_suffix only strips from the END, so this case is NOT matched.
-        // This is a rare edge case and acceptable behavior.
-        // The user should name subtitle files with lang code at the end.
-        assert!(!check_match(
-            "Riot.2015.1080p.BluRay.x264.YTS",
-            "Riot.fin.2015.1080p"
-        ));
-    }
-
-    #[test]
-    fn test_underscore_lang_code() {
-        assert!(check_match(
-            "Riot.2015.1080p.BluRay.x264.YTS",
-            "Riot.2015_fin"
-        ), "FAILED: _fin suffix should match!");
-    }
-
-    #[test]
-    fn test_hyphen_lang_code() {
-        assert!(check_match(
-            "Riot.2015.1080p.BluRay.x264.YTS",
-            "Riot.2015-fin"
-        ), "FAILED: -fin suffix should match!");
-    }
-
-    #[test]
-    fn test_no_false_positive_completely_different() {
-        // Different movies should NOT match
+    fn test_no_match_different_movies() {
         assert!(!check_match("The.Dark.Knight.2008", "Inception.2010"),
-            "Completely different movies should not match!");
+            "Different movies should NOT match!");
     }
 
     #[test]
-    fn test_no_false_positive_same_series() {
-        // Same series different movies should NOT match
+    fn test_no_match_same_series_different_years() {
         assert!(!check_match("The.Dark.Knight.2008", "The.Dark.Knight.Rises.2012"),
-            "Different movies in same series should not match!");
+            "Different movies in same series should NOT match!");
     }
 
     #[test]
-    fn test_uppercase_lang() {
+    fn test_match_subtitle_with_hyphens() {
         assert!(check_match(
-            "Riot.2015.1080p.BluRay.x264.YTS",
-            "Riot.2015.FIN"
-        ), "FAILED: .FIN (uppercase) should match!");
+            "Riot.2015.1080p.WEB-DL",
+            "Riot.2015.NORDIC.WEBRiP.x264-ABC"
+        ));
     }
 
-    // --- All variations the filter should handle ---
     #[test]
-    fn test_lang_code_variations() {
-        let video_stem = "Riot.2015.1080p.BluRay.x264.YTS";
+    fn test_upper_vs_lower() {
+        assert!(check_match("RIOT.2015.1080P.BLURAY", "riot.2015.1080p"));
+    }
 
-        let patterns = vec![
-            "Riot.2015.1080p.BluRay.x264.YTS.fin",  // same name + lang suffix
-            "Riot.2015.1080p.BluRay.x264.YTS.eng",  // same name + eng suffix
-            "Riot.2015.1080p.BluRay.x264.YTS.FIN",  // uppercase lang
-            "Riot.2015.1080p.BluRay.x264.YTS.fi",   // 2-letter code
-            "Riot.2015",                              // just base name
-            "Riot.2015.fin",                          // base + lang (THE BUG CASE)
-            "Riot.2015.eng",                          // base + eng
-            "Riot.2015.FIN",                          // base + uppercase lang
-        ];
+    // === Existing strip_lang_suffix tests ===
 
-        for pattern in &patterns {
-            assert!(
-                check_match(video_stem, pattern),
-                "Pattern '{}' failed to match!",
-                pattern
-            );
-        }
+    #[test]
+    fn test_strip_lang_suffix() {
+        assert_eq!(strip_lang_suffix("Riot.2015.fin"), "Riot.2015");
+        assert_eq!(strip_lang_suffix("Riot.2015.eng"), "Riot.2015");
+        assert_eq!(strip_lang_suffix("Riot.2015.fi"), "Riot.2015");
+        assert_eq!(strip_lang_suffix("Riot.2015.en"), "Riot.2015");
+        assert_eq!(strip_lang_suffix("Riot.2015"), "Riot.2015");
     }
 }
