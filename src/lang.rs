@@ -1,8 +1,8 @@
+use crate::config::LANG_DATA;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use whatlang::detect;
-use crate::config::LANG_DATA;
 
 pub struct LangDetectResult {
     pub iso: String,
@@ -10,7 +10,8 @@ pub struct LangDetectResult {
 }
 
 pub fn detect_subtitle_language(path: &Path) -> LangDetectResult {
-    let filename = path.file_name()
+    let filename = path
+        .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("")
         .to_lowercase();
@@ -20,8 +21,10 @@ pub fn detect_subtitle_language(path: &Path) -> LangDetectResult {
         let patterns = [
             format!(".{}.", iso1),
             format!("_{}.", iso1),
+            format!("-{}.", iso1),
             format!(".{}.", iso3),
             format!("_{}.", iso3),
+            format!("-{}.", iso3),
         ];
 
         for pat in patterns.iter() {
@@ -56,8 +59,8 @@ pub fn detect_subtitle_language(path: &Path) -> LangDetectResult {
 
         if !sample_text.trim().is_empty() {
             if let Some(info) = detect(&sample_text) {
-                let code = info.lang().code(); 
-                
+                let code = info.lang().code();
+
                 if let Some((iso3, name)) = LANG_DATA.get(code) {
                     return LangDetectResult {
                         iso: iso3.to_string(),
@@ -65,7 +68,7 @@ pub fn detect_subtitle_language(path: &Path) -> LangDetectResult {
                     };
                 }
 
-                for (_, (iso3, name)) in LANG_DATA.iter() {
+                for (iso3, name) in LANG_DATA.values() {
                     if *iso3 == code {
                         return LangDetectResult {
                             iso: iso3.to_string(),

@@ -1,10 +1,10 @@
+use crate::config::{Config, LANG_DATA};
+use crate::lang::detect_subtitle_language;
+use crate::scanner::find_matching_assets;
+use regex::Regex;
+use std::fs;
 use std::path::Path;
 use std::process::Command;
-use std::fs;
-use regex::Regex;
-use crate::config::Config;
-use crate::scanner::find_matching_assets;
-use crate::lang::detect_subtitle_language;
 
 pub struct Processor {
     config: Config,
@@ -17,9 +17,10 @@ pub struct Processor {
 #[derive(Debug)]
 struct MediaInfo {
     title: String,
-    season_folder: String, 
+    season_folder: String,
     is_series: bool,
     year: Option<String>,
+    episode: Option<String>,
 }
 
 pub enum ProcessStatus {
@@ -40,13 +41,17 @@ impl Processor {
     }
 
     fn clean_title(&self, input: &str) -> String {
-        input.replace(['.', '_', '-'], " ")
+        input
+            .replace(['.', '_', '-'], " ")
             .split_whitespace()
             .filter(|w| !w.starts_with('(') && !w.ends_with(')')) // Ignore trailing (2024) etc if caught
             .map(|w| {
                 let mut chars = w.chars();
                 match chars.next() {
-                    Some(c) => c.to_uppercase().collect::<String>() + chars.as_str().to_lowercase().as_str(),
+                    Some(c) => {
+                        c.to_uppercase().collect::<String>()
+                            + chars.as_str().to_lowercase().as_str()
+                    }
                     None => String::new(),
                 }
             })
@@ -58,11 +63,11 @@ impl Processor {
 
     fn parse_media_info(&self, path: &Path) -> MediaInfo {
         let filename = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        
+
         if let Some(caps) = self.regex_series_standard.captures(filename) {
             let raw = caps.get(1).map_or("", |m| m.as_str());
             let season = caps.get(2).map_or("1", |m| m.as_str());
-            
+
             let title = if raw.len() < 2 {
                 self.infer_title_from_folder(path)
             } else {
@@ -74,25 +79,27 @@ impl Processor {
                 season_folder: format!("Season {:0>2}", season),
                 is_series: true,
                 year: None,
+                episode: Some(caps.get(3).map_or("1", |m| m.as_str()).to_string()),
             };
         }
 
         if let Some(caps) = self.regex_series_x.captures(filename) {
             let raw = caps.get(1).map_or("", |m| m.as_str());
             let season = caps.get(2).map_or("1", |m| m.as_str());
-            
+
             return MediaInfo {
                 title: self.clean_title(raw),
                 season_folder: format!("Season {:0>2}", season),
                 is_series: true,
                 year: None,
+                episode: Some(caps.get(3).map_or("1", |m| m.as_str()).to_string()),
             };
         }
 
         if let Some(caps) = self.regex_year.captures(filename) {
             let raw = caps.get(1).map_or("", |m| m.as_str());
             let year = caps.get(2).map_or("", |m| m.as_str());
-            
+
             let title = if raw.is_empty() {
                 filename.replace(year, "").trim().to_string()
             } else {
@@ -104,6 +111,7 @@ impl Processor {
                 season_folder: String::new(),
                 is_series: false,
                 year: Some(year.to_string()),
+                episode: None,
             };
         }
 
@@ -116,6 +124,7 @@ impl Processor {
                     season_folder: format!("Season {:0>2}", season),
                     is_series: true,
                     year: None,
+                    episode: None,
                 };
             }
         }
@@ -125,17 +134,21 @@ impl Processor {
             season_folder: String::new(),
             is_series: false,
             year: None,
+            episode: None,
         }
     }
 
     fn infer_title_from_folder(&self, path: &Path) -> String {
-        let components: Vec<_> = path.components()
+        let components: Vec<_> = path
+            .components()
             .map(|c| c.as_os_str().to_string_lossy())
             .collect();
-        
+
         let len = components.len();
-        if len < 3 { return "Unknown".to_string(); }
-        
+        if len < 3 {
+            return "Unknown".to_string();
+        }
+
         let parent = &components[len - 2];
         if self.regex_season_only.is_match(parent) {
             self.clean_title(&components[len - 3])
@@ -146,9 +159,10 @@ impl Processor {
 
     pub fn process_file(&self, video_path: &Path) -> ProcessStatus {
         let meta = self.parse_media_info(video_path);
-        
+
         let target_dir = if meta.is_series {
-            self.config.output_root
+            self.config
+                .output_root
                 .join("TV Shows")
                 .join(&meta.title)
                 .join(&meta.season_folder)
@@ -158,13 +172,24 @@ impl Processor {
             } else {
                 meta.title.clone()
             };
-            self.config.output_root
-                .join("Movies")
-                .join(folder_name)
+            self.config.output_root.join("Movies").join(folder_name)
         };
 
-        let stem = video_path.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
-        let output_file = target_dir.join(format!("{}.mkv", stem));
+        let stem = video_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("output");
+        let output_stem = if meta.is_series {
+            match &meta.episode {
+                Some(episode) => {
+                    format!("{} S{}E{}", meta.title, &meta.season_folder[7..], episode)
+                }
+                _ => self.clean_title(stem),
+            }
+        } else {
+            meta.title.clone()
+        };
+        let output_file = target_dir.join(format!("{}.mkv", sanitize_filename(&output_stem)));
 
         if output_file.exists() {
             return ProcessStatus::Skipped;
@@ -173,7 +198,10 @@ impl Processor {
         let assets = find_matching_assets(video_path, &self.config);
 
         if self.config.dry_run {
-            return ProcessStatus::Success { subs: assets.subtitles.len(), audios: assets.audios.len() }; 
+            return ProcessStatus::Success {
+                subs: assets.subtitles.len(),
+                audios: assets.audios.len(),
+            };
         }
 
         if let Err(e) = fs::create_dir_all(&target_dir) {
@@ -185,44 +213,79 @@ impl Processor {
 
         for sub in &assets.subtitles {
             let lang = detect_subtitle_language(sub);
-            let is_default = if lang.iso == self.config.default_sub_lang { "1" } else { "0" };
-            
-            cmd.arg("--language").arg(format!("0:{}", lang.iso))
-               .arg("--track-name").arg(format!("0:{}", lang.name))
-               .arg("--default-track").arg(format!("0:{}", is_default))
-               .arg(sub);
+            let is_default = if lang.iso == self.config.default_sub_lang {
+                "1"
+            } else {
+                "0"
+            };
+
+            cmd.arg("--language")
+                .arg(format!("0:{}", lang.iso))
+                .arg("--track-name")
+                .arg(format!("0:{}", lang.name))
+                .arg("--default-track")
+                .arg(format!("0:{}", is_default))
+                .arg(sub);
         }
 
         for audio in &assets.audios {
-            let name = audio.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
-            let (iso, lang_name) = if name.contains("fin") || name.contains("suomi") {
-                ("fin", "Finnish")
-            } else if name.contains("eng") || name.contains("english") {
-                ("eng", "English")
-            } else {
-                ("eng", "English") // Default to English for now
-            };
+            let name = audio
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            let (iso, lang_name) = detect_audio_language(&name);
 
-            cmd.arg("--language").arg(format!("0:{}", iso)) 
-               .arg("--track-name").arg(format!("0:{}", lang_name))
-               .arg(audio);
+            cmd.arg("--language")
+                .arg(format!("0:{}", iso))
+                .arg("--track-name")
+                .arg(format!("0:{}", lang_name))
+                .arg(audio);
         }
 
         match cmd.output() {
             Ok(output) => {
                 if output.status.success() {
-                     if self.config.delete_originals {
-                         let _ = fs::remove_file(video_path);
-                         for s in &assets.subtitles { let _ = fs::remove_file(s); }
-                         for a in &assets.audios { let _ = fs::remove_file(a); }
-                     }
-                     ProcessStatus::Success { subs: assets.subtitles.len(), audios: assets.audios.len() }
+                    if self.config.delete_originals {
+                        let _ = fs::remove_file(video_path);
+                        for s in &assets.subtitles {
+                            let _ = fs::remove_file(s);
+                        }
+                        for a in &assets.audios {
+                            let _ = fs::remove_file(a);
+                        }
+                    }
+                    ProcessStatus::Success {
+                        subs: assets.subtitles.len(),
+                        audios: assets.audios.len(),
+                    }
                 } else {
                     let err = String::from_utf8_lossy(&output.stderr);
+                    let _ = fs::remove_file(&output_file);
                     ProcessStatus::Failed(err.trim().to_string())
                 }
             }
             Err(e) => ProcessStatus::Failed(e.to_string()),
         }
     }
+}
+
+fn detect_audio_language(name: &str) -> (&'static str, &'static str) {
+    for (iso1, (iso3, lang_name)) in LANG_DATA.iter() {
+        let lower = name.to_lowercase();
+        for separator in ['.', '_', '-', ' '] {
+            if lower.contains(&format!("{}{}", separator, iso1))
+                || lower.contains(&format!("{}{}", separator, iso3))
+            {
+                return (iso3, lang_name);
+            }
+        }
+    }
+    ("und", "Undefined")
+}
+
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| if "<>:\"/\\|?*".contains(c) { '_' } else { c })
+        .collect()
 }

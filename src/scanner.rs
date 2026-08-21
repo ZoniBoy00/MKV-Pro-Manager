@@ -1,8 +1,8 @@
-use std::path::{Path, PathBuf};
-use std::collections::HashSet;
-use regex::Regex;
-use once_cell::sync::Lazy;
 use crate::config::{Config, LANG_DATA};
+use once_cell::sync::Lazy;
+use regex::Regex;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 static SXXEXX_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)s(\d+)e(\d+)").unwrap());
 
@@ -13,40 +13,80 @@ static SXXEXX_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)s(\d+)e(\d+)").unw
 static RELEASE_TAGS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     let mut s = HashSet::new();
     // Quality
-    for &t in &["480p", "720p", "1080p", "2160p", "4k"] { s.insert(t); }
+    for &t in &["480p", "720p", "1080p", "2160p", "4k"] {
+        s.insert(t);
+    }
     // Source
-    for &t in &["bluray", "brrip", "webrip", "web-dl", "webdl", "web.dl",
-               "hdtv", "hdrip", "dvdrip", "dvdscr", "cam", "hcam", "tc", "ts", "wp",
-               "ppv", "remux"] { s.insert(t); }
+    for &t in &[
+        "bluray", "brrip", "webrip", "web-dl", "webdl", "web.dl", "hdtv", "hdrip", "dvdrip",
+        "dvdscr", "cam", "hcam", "tc", "ts", "wp", "ppv", "remux",
+    ] {
+        s.insert(t);
+    }
     // Codec
-    for &t in &["x264", "x265", "h264", "h265", "hevc", "avc", "mpeg2", "mpeg-2",
-               "xvid", "divx", "vc1", "vc-1", "av1"] { s.insert(t); }
+    for &t in &[
+        "x264", "x265", "h264", "h265", "hevc", "avc", "mpeg2", "mpeg-2", "xvid", "divx", "vc1",
+        "vc-1", "av1",
+    ] {
+        s.insert(t);
+    }
     // Audio
-    for &t in &["ac3", "aac", "dts", "flac", "mp3", "eac3", "truehd", "dts-hd",
-               "pcm", "dd5.1", "ddp5.1", "atmos"] { s.insert(t); }
+    for &t in &[
+        "ac3", "aac", "dts", "flac", "mp3", "eac3", "truehd", "dts-hd", "pcm", "dd5.1", "ddp5.1",
+        "atmos",
+    ] {
+        s.insert(t);
+    }
     // Groups / Scene / Flags
-    for &t in &["yts", "yify", "dawgs", "rarbg", "fgt", "ion10", "evo", "amzn",
-               "nf", "ntb", "ctrlhd", "kappa", "axxo", "sparks", "fum",
-               "proper", "repack", "internal", "readnfo", "unrated",
-               "extended", "directors.cut", "theatrical", "edition"] { s.insert(t); }
+    for &t in &[
+        "yts",
+        "yify",
+        "dawgs",
+        "rarbg",
+        "fgt",
+        "ion10",
+        "evo",
+        "amzn",
+        "nf",
+        "ntb",
+        "ctrlhd",
+        "kappa",
+        "axxo",
+        "sparks",
+        "fum",
+        "proper",
+        "repack",
+        "internal",
+        "readnfo",
+        "unrated",
+        "extended",
+        "directors.cut",
+        "theatrical",
+        "edition",
+    ] {
+        s.insert(t);
+    }
     // Region tags
-    for &t in &["nordic"] { s.insert(t); }
+    s.insert("nordic");
     // 3-letter language codes (from LANG_DATA values)
-    for (_, (iso3, _)) in LANG_DATA.iter() {
+    for (iso3, _) in LANG_DATA.values() {
         s.insert(*iso3);
     }
     // 2-letter language codes (from LANG_DATA keys)
-    for (iso1, _) in LANG_DATA.iter() {
+    for iso1 in LANG_DATA.keys() {
         s.insert(*iso1);
     }
     // Other common media tags
-    for &t in &["hdr", "sdr", "dv", "dovi", "dolby", "vision", "uhd", "fhd",
-               "hd", "sd", "pal", "ntsc"] { s.insert(t); }
+    for &t in &[
+        "hdr", "sdr", "dv", "dovi", "dolby", "vision", "uhd", "fhd", "hd", "sd", "pal", "ntsc",
+    ] {
+        s.insert(t);
+    }
     s
 });
 
 /// Normalizes text for fingerprinting: lowercase alphanumeric only.
-fn get_fingerprint(text: &str) -> String {
+pub fn get_fingerprint(text: &str) -> String {
     text.chars()
         .filter(|c| c.is_alphanumeric())
         .map(|c| c.to_lowercase().to_string())
@@ -59,7 +99,7 @@ fn get_fingerprint(text: &str) -> String {
 fn strip_lang_suffix(stem: &str) -> String {
     let lower = stem.to_lowercase();
 
-    for (_iso1, (iso3, _name)) in LANG_DATA.iter() {
+    for (iso3, _name) in LANG_DATA.values() {
         for sep in &[".", "_", "-"] {
             let pat = format!("{}{}", sep, iso3);
             if lower.ends_with(&pat) {
@@ -102,7 +142,7 @@ fn strip_lang_suffix(stem: &str) -> String {
 /// clean_stem_for_matching("Riot.2015.NORDIC.1080p.BluRay.x264.AC3-DAWGS-fin")
 ///   → "Riot.2015"
 /// ```
-fn clean_stem_for_matching(stem: &str) -> String {
+pub fn clean_stem_for_matching(stem: &str) -> String {
     // Step 1: Remove everything inside brackets
     let no_brackets: String = {
         let mut result = String::with_capacity(stem.len());
@@ -119,10 +159,7 @@ fn clean_stem_for_matching(stem: &str) -> String {
     };
 
     // Step 2: Split by dots only → tokens
-    let tokens: Vec<&str> = no_brackets
-        .split('.')
-        .filter(|t| !t.is_empty())
-        .collect();
+    let tokens: Vec<&str> = no_brackets.split('.').filter(|t| !t.is_empty()).collect();
 
     // Helper: check if a token (or any hyphen/underscore-split sub-token) is a known tag
     let is_known_tag = |token: &str| -> bool {
@@ -132,12 +169,14 @@ fn clean_stem_for_matching(stem: &str) -> String {
             return true;
         }
         // Check sub-tokens split by common separators
-        token.split(|c: char| c == '-' || c == '_')
+        token
+            .split(['-', '_'])
             .any(|sub| !sub.is_empty() && RELEASE_TAGS.contains(sub.to_lowercase().as_str()))
     };
 
     // Step 3: Remove known release tags, keep year and title words
-    let clean_tokens: Vec<String> = tokens.iter()
+    let clean_tokens: Vec<String> = tokens
+        .iter()
         .filter(|token| {
             // Keep year numbers (4-digit, 1900-2099)
             if let Ok(num) = token.parse::<u32>() {
@@ -155,6 +194,15 @@ fn clean_stem_for_matching(stem: &str) -> String {
     clean_tokens.join(".")
 }
 
+pub fn fingerprints_match(left: &str, right: &str) -> bool {
+    let left = get_fingerprint(&clean_stem_for_matching(left));
+    let right = get_fingerprint(&clean_stem_for_matching(right));
+    if left.len() < 5 || right.len() < 5 {
+        return false;
+    }
+    left.contains(&right) || right.contains(&left)
+}
+
 #[derive(Debug, Default)]
 pub struct FoundAssets {
     pub subtitles: Vec<PathBuf>,
@@ -165,23 +213,33 @@ pub struct FoundAssets {
 pub fn find_matching_assets(video_path: &Path, config: &Config) -> FoundAssets {
     let mut assets = FoundAssets::default();
 
-    let Some(parent) = video_path.parent() else { return assets; };
-    let Some(video_stem) = video_path.file_stem().and_then(|s| s.to_str()) else { return assets; };
+    let Some(parent) = video_path.parent() else {
+        return assets;
+    };
+    let Some(video_stem) = video_path.file_stem().and_then(|s| s.to_str()) else {
+        return assets;
+    };
 
     // Compute fingerprint from CLEANED stem (strips release tags so different
     // release groups like YTS and DAWGS can still match)
     let clean_video_stem = clean_stem_for_matching(video_stem);
     let video_fingerprint = get_fingerprint(&clean_video_stem);
-    if video_fingerprint.is_empty() { return assets; }
+    if video_fingerprint.is_empty() {
+        return assets;
+    }
 
     // Directories to search: current folder and potential 'Subs' or 'Subtitles' subfolders
     let mut search_dirs = vec![parent.to_path_buf()];
 
     let subs_subfolder = parent.join("Subs");
-    if subs_subfolder.is_dir() { search_dirs.push(subs_subfolder); }
+    if subs_subfolder.is_dir() {
+        search_dirs.push(subs_subfolder);
+    }
 
     let subtitles_subfolder = parent.join("Subtitles");
-    if subtitles_subfolder.is_dir() { search_dirs.push(subtitles_subfolder); }
+    if subtitles_subfolder.is_dir() {
+        search_dirs.push(subtitles_subfolder);
+    }
 
     for dir in search_dirs {
         let entries = match std::fs::read_dir(dir) {
@@ -195,10 +253,16 @@ pub fn find_matching_assets(video_path: &Path, config: &Config) -> FoundAssets {
                 continue;
             }
 
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
-            let Some(item_stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let Some(item_stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
 
-            let Some(ext) = path.extension().and_then(|e| e.to_str()) else { continue };
+            let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+                continue;
+            };
             let ext = format!(".{}", ext.to_ascii_lowercase());
 
             if !config.ext_sub.contains(&ext) && !config.ext_audio.contains(&ext) {
@@ -211,8 +275,10 @@ pub fn find_matching_assets(video_path: &Path, config: &Config) -> FoundAssets {
 
             // Match if one cleaned fingerprint is contained in the other,
             // or if they share a common SxxExx pattern
-            let is_match = if item_fingerprint.contains(&video_fingerprint)
-                || video_fingerprint.contains(&item_fingerprint)
+            let is_match = if !item_fingerprint.is_empty()
+                && item_fingerprint.len() >= 5
+                && (item_fingerprint.contains(&video_fingerprint)
+                    || video_fingerprint.contains(&item_fingerprint))
             {
                 true
             } else {
@@ -220,8 +286,9 @@ pub fn find_matching_assets(video_path: &Path, config: &Config) -> FoundAssets {
                 let clean_stem = strip_lang_suffix(item_stem);
                 if clean_stem != item_stem {
                     let clean_fp = get_fingerprint(&clean_stem);
-                    clean_fp.contains(&video_fingerprint)
-                        || video_fingerprint.contains(&clean_fp)
+                    clean_fp.len() >= 5
+                        && (clean_fp.contains(&video_fingerprint)
+                            || video_fingerprint.contains(&clean_fp))
                 } else {
                     false
                 }

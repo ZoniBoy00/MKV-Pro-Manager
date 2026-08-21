@@ -1,10 +1,10 @@
+use console::style;
+use dialoguer::{theme::ColorfulTheme, Confirm, Input};
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::fs;
-use once_cell::sync::Lazy;
-use dialoguer::{Input, Confirm, theme::ColorfulTheme};
-use console::style;
+use std::path::PathBuf;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Config {
@@ -24,16 +24,57 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             root_folder: PathBuf::from(r"C:\MKV-Pro-Manager\input"),
-            output_root: PathBuf::from("MKV_output"), 
+            output_root: PathBuf::from("MKV_output"),
             mkvmerge_path: PathBuf::from(r"C:\Program Files\MKVToolNix\mkvmerge.exe"),
             dry_run: false,
             delete_originals: false,
             default_sub_lang: "fin".to_string(),
             ext_video: vec![".mp4".into(), ".mkv".into(), ".avi".into(), ".mov".into()],
             ext_sub: vec![".srt".into(), ".ass".into(), ".ssa".into(), ".vtt".into()],
-            ext_audio: vec![".aac".into(), ".mp3".into(), ".m4a".into(), ".flac".into(), ".wav".into()],
+            ext_audio: vec![
+                ".aac".into(),
+                ".mp3".into(),
+                ".m4a".into(),
+                ".flac".into(),
+                ".wav".into(),
+            ],
             concurrent_jobs: 2,
         }
+    }
+}
+
+impl Config {
+    /// Validate values that could otherwise make processing unsafe or panic.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.concurrent_jobs == 0 || self.concurrent_jobs > 64 {
+            return Err("concurrent_jobs must be between 1 and 64".to_string());
+        }
+        if self.default_sub_lang.trim().is_empty() {
+            return Err("default_sub_lang must not be empty".to_string());
+        }
+        let default_sub_lang = self.default_sub_lang.to_lowercase();
+        if !LANG_DATA
+            .values()
+            .any(|(iso3, _)| *iso3 == default_sub_lang)
+        {
+            return Err(format!(
+                "unsupported default_sub_lang: {}",
+                self.default_sub_lang
+            ));
+        }
+        for (name, extensions) in [
+            ("video", &self.ext_video),
+            ("subtitle", &self.ext_sub),
+            ("audio", &self.ext_audio),
+        ] {
+            if extensions
+                .iter()
+                .any(|ext| !ext.starts_with('.') || ext.len() == 1)
+            {
+                return Err(format!("{} extensions must start with a dot", name));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -63,16 +104,27 @@ pub fn get_config_path() -> PathBuf {
 
 pub fn load_config_interactive() -> Config {
     let config_path = get_config_path();
-    
+
     // Attempt to load existing
     if config_path.exists() {
         match fs::read_to_string(&config_path) {
             Ok(content) => {
                 match toml::from_str::<Config>(&content) {
-                    Ok(cfg) => return cfg,
+                    Ok(cfg) => {
+                        if let Err(e) = cfg.validate() {
+                            println!(
+                                "{} Invalid configuration: {}",
+                                style("❌").red(),
+                                style(e).red()
+                            );
+                            std::process::exit(1);
+                        }
+                        return cfg;
+                    }
                     Err(e) => {
-                        println!("\n{} {} {}", 
-                            style("❌").red(), 
+                        println!(
+                            "\n{} {} {}",
+                            style("❌").red(),
                             style("Error parsing config.toml:").red().bold(),
                             style(e).red()
                         );
@@ -82,8 +134,9 @@ pub fn load_config_interactive() -> Config {
                 }
             }
             Err(e) => {
-                println!("\n{} {} {}", 
-                    style("❌").red(), 
+                println!(
+                    "\n{} {} {}",
+                    style("❌").red(),
                     style("Error reading config.toml:").red().bold(),
                     style(e).red()
                 );
@@ -94,7 +147,10 @@ pub fn load_config_interactive() -> Config {
 
     // Wizard
     println!();
-    println!("{}", style("⚡ Welcome to MKV Pro Manager Setup").bold().cyan());
+    println!(
+        "{}",
+        style("⚡ Welcome to MKV Pro Manager Setup").bold().cyan()
+    );
     println!("{}", style("Let's configure your environment.").dim());
     println!();
 
@@ -141,11 +197,20 @@ pub fn load_config_interactive() -> Config {
         root_folder: PathBuf::from(root_folder),
         output_root: PathBuf::from(output_root),
         mkvmerge_path: PathBuf::from(mkvmerge_path),
-        default_sub_lang,
+        default_sub_lang: default_sub_lang.to_lowercase(),
         delete_originals,
         concurrent_jobs,
         ..default
     };
+
+    if let Err(e) = new_config.validate() {
+        println!(
+            "{} Invalid configuration: {}",
+            style("❌").red(),
+            style(e).red()
+        );
+        std::process::exit(1);
+    }
 
     // Save
     if let Ok(toml_str) = toml::to_string_pretty(&new_config) {
@@ -154,4 +219,33 @@ pub fn load_config_interactive() -> Config {
     }
 
     new_config
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Config, LANG_DATA};
+
+    #[test]
+    fn default_config_is_valid() {
+        assert!(Config::default().validate().is_ok());
+    }
+
+    #[test]
+    fn zero_workers_are_rejected() {
+        let config = Config {
+            concurrent_jobs: 0,
+            ..Config::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn unknown_subtitle_language_is_rejected() {
+        let config = Config {
+            default_sub_lang: "zzz".to_string(),
+            ..Config::default()
+        };
+        assert!(config.validate().is_err());
+        assert!(!LANG_DATA.is_empty());
+    }
 }
