@@ -24,3 +24,8 @@ fn does_not_match_unrelated_or_tiny_names() {
         "Other.Movie.2020.srt"
     ));
 }
+
+#[test]
+fn does_not_match_titles_that_only_share_a_prefix() {
+    assert!(!fingerprints_match("Alien.1979", "Aliens.1986.eng"));
+}

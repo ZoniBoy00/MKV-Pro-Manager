@@ -1,207 +1,11 @@
-use crate::config::{Config, LANG_DATA};
-use once_cell::sync::Lazy;
-use regex::Regex;
-use std::collections::HashSet;
+use crate::config::Config;
+use crate::naming::{is_generic_name, item_keys, keys_match, match_key, MatchKey};
+use std::fs;
 use std::path::{Path, PathBuf};
 
-static SXXEXX_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)s(\d+)e(\d+)").unwrap());
-
-/// Common release tags stripped before fingerprint matching.
-/// These are quality, source, codec, audio, group, region, and language tags
-/// that differ between release groups (e.g. YTS vs DAWGS) but don't affect
-/// the actual title of the media.
-static RELEASE_TAGS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
-    let mut s = HashSet::new();
-    // Quality
-    for &t in &["480p", "720p", "1080p", "2160p", "4k"] {
-        s.insert(t);
-    }
-    // Source
-    for &t in &[
-        "bluray", "brrip", "webrip", "web-dl", "webdl", "web.dl", "hdtv", "hdrip", "dvdrip",
-        "dvdscr", "cam", "hcam", "tc", "ts", "wp", "ppv", "remux",
-    ] {
-        s.insert(t);
-    }
-    // Codec
-    for &t in &[
-        "x264", "x265", "h264", "h265", "hevc", "avc", "mpeg2", "mpeg-2", "xvid", "divx", "vc1",
-        "vc-1", "av1",
-    ] {
-        s.insert(t);
-    }
-    // Audio
-    for &t in &[
-        "ac3", "aac", "dts", "flac", "mp3", "eac3", "truehd", "dts-hd", "pcm", "dd5.1", "ddp5.1",
-        "atmos",
-    ] {
-        s.insert(t);
-    }
-    // Groups / Scene / Flags
-    for &t in &[
-        "yts",
-        "yify",
-        "dawgs",
-        "rarbg",
-        "fgt",
-        "ion10",
-        "evo",
-        "amzn",
-        "nf",
-        "ntb",
-        "ctrlhd",
-        "kappa",
-        "axxo",
-        "sparks",
-        "fum",
-        "proper",
-        "repack",
-        "internal",
-        "readnfo",
-        "unrated",
-        "extended",
-        "directors.cut",
-        "theatrical",
-        "edition",
-    ] {
-        s.insert(t);
-    }
-    // Region tags
-    s.insert("nordic");
-    // 3-letter language codes (from LANG_DATA values)
-    for (iso3, _) in LANG_DATA.values() {
-        s.insert(*iso3);
-    }
-    // 2-letter language codes (from LANG_DATA keys)
-    for iso1 in LANG_DATA.keys() {
-        s.insert(*iso1);
-    }
-    // Other common media tags
-    for &t in &[
-        "hdr", "sdr", "dv", "dovi", "dolby", "vision", "uhd", "fhd", "hd", "sd", "pal", "ntsc",
-    ] {
-        s.insert(t);
-    }
-    s
-});
-
-/// Normalizes text for fingerprinting: lowercase alphanumeric only.
-pub fn get_fingerprint(text: &str) -> String {
-    text.chars()
-        .filter(|c| c.is_alphanumeric())
-        .map(|c| c.to_lowercase().to_string())
-        .collect()
-}
-
-/// Strips common language-code suffixes (e.g., `.fin`, `_eng`, `.fi`) from
-/// a filename stem *for matching purposes only* — the original stem is
-/// kept intact for language detection.
-fn strip_lang_suffix(stem: &str) -> String {
-    let lower = stem.to_lowercase();
-
-    for (iso3, _name) in LANG_DATA.values() {
-        for sep in &[".", "_", "-"] {
-            let pat = format!("{}{}", sep, iso3);
-            if lower.ends_with(&pat) {
-                let idx = stem.len().saturating_sub(pat.len());
-                return stem[..idx].to_string();
-            }
-        }
-    }
-
-    for (iso1, (_iso3, _name)) in LANG_DATA.iter() {
-        for sep in &[".", "_", "-"] {
-            let pat = format!("{}{}", sep, iso1);
-            let three = format!("{}{}", sep, _iso3);
-            if lower.ends_with(&pat) && !lower.ends_with(&three) {
-                let idx = stem.len().saturating_sub(pat.len());
-                return stem[..idx].to_string();
-            }
-        }
-    }
-
-    stem.to_string()
-}
-
-/// Strips all known release metadata tags from a filename stem so that
-/// videos and subtitles from different release groups (YTS vs DAWGS etc.)
-/// produce the same "clean name" for matching.
-///
-/// ## How it works
-/// 1. Removes everything inside brackets `[...]`, `(...)`, `{...}`
-/// 2. Splits by `.`, `-`, `_`, or space into tokens
-/// 3. Drops tokens that match known release tags (quality, codec,
-///    source, audio, group, region, language)
-/// 4. Preserves the year and title words
-/// 5. Rejoins with dots
-///
-/// ## Example
-/// ```ignore
-/// clean_stem_for_matching("Riot.2015.1080p.BluRay.x264.[YTS.AG]")
-///   → "Riot.2015"
-/// clean_stem_for_matching("Riot.2015.NORDIC.1080p.BluRay.x264.AC3-DAWGS-fin")
-///   → "Riot.2015"
-/// ```
-pub fn clean_stem_for_matching(stem: &str) -> String {
-    // Step 1: Remove everything inside brackets
-    let no_brackets: String = {
-        let mut result = String::with_capacity(stem.len());
-        let mut depth = 0i32;
-        for c in stem.chars() {
-            match c {
-                '[' | '(' | '{' => depth += 1,
-                ']' | ')' | '}' => depth = depth.saturating_sub(1),
-                _ if depth == 0 => result.push(c),
-                _ => {}
-            }
-        }
-        result
-    };
-
-    // Step 2: Split by dots only → tokens
-    let tokens: Vec<&str> = no_brackets.split('.').filter(|t| !t.is_empty()).collect();
-
-    // Helper: check if a token (or any hyphen/underscore-split sub-token) is a known tag
-    let is_known_tag = |token: &str| -> bool {
-        let lower = token.to_lowercase();
-        // Check full token first
-        if RELEASE_TAGS.contains(lower.as_str()) {
-            return true;
-        }
-        // Check sub-tokens split by common separators
-        token
-            .split(['-', '_'])
-            .any(|sub| !sub.is_empty() && RELEASE_TAGS.contains(sub.to_lowercase().as_str()))
-    };
-
-    // Step 3: Remove known release tags, keep year and title words
-    let clean_tokens: Vec<String> = tokens
-        .iter()
-        .filter(|token| {
-            // Keep year numbers (4-digit, 1900-2099)
-            if let Ok(num) = token.parse::<u32>() {
-                if (1900..=2099).contains(&num) {
-                    return true;
-                }
-            }
-
-            // Drop if token or any sub-component matches a known tag
-            !is_known_tag(token)
-        })
-        .map(|t| t.to_string())
-        .collect();
-
-    clean_tokens.join(".")
-}
-
-pub fn fingerprints_match(left: &str, right: &str) -> bool {
-    let left = get_fingerprint(&clean_stem_for_matching(left));
-    let right = get_fingerprint(&clean_stem_for_matching(right));
-    if left.len() < 5 || right.len() < 5 {
-        return false;
-    }
-    left.contains(&right) || right.contains(&left)
-}
+pub use crate::naming::{
+    clean_stem_for_matching, fingerprints_match, get_fingerprint,
+};
 
 #[derive(Debug, Default)]
 pub struct FoundAssets {
@@ -209,109 +13,265 @@ pub struct FoundAssets {
     pub audios: Vec<PathBuf>,
 }
 
-/// Scans the directory of the given video file for matching subtitles and audio tracks.
-pub fn find_matching_assets(video_path: &Path, config: &Config) -> FoundAssets {
-    let mut assets = FoundAssets::default();
+#[derive(Clone, Copy, PartialEq)]
+enum AssetKind {
+    Subtitle,
+    Audio,
+}
 
-    let Some(parent) = video_path.parent() else {
-        return assets;
+enum Origin {
+    /// Next to the video.
+    Adjacent,
+    /// Directly inside `Subs/` or `Subtitles/`.
+    SubsRoot,
+    /// Inside `Subs/<name>/` (the folder name identifies the video).
+    NamedFolder(MatchKey),
+}
+
+struct Candidate {
+    path: PathBuf,
+    kind: AssetKind,
+    keys: Vec<MatchKey>,
+    generic: bool,
+    origin: Origin,
+}
+
+/// Everything in one video directory that could be a subtitle or audio track.
+/// Built once per directory so a season folder is not rescanned per episode.
+pub struct DirIndex {
+    video_count: usize,
+    candidates: Vec<Candidate>,
+}
+
+fn extension_of(path: &Path) -> Option<String> {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| format!(".{}", e.to_ascii_lowercase()))
+}
+
+fn is_subs_folder(name: &str) -> bool {
+    matches!(name.to_ascii_lowercase().as_str(), "subs" | "subtitles")
+}
+
+fn candidate(path: PathBuf, config: &Config, origin: Origin) -> Option<Candidate> {
+    let ext = extension_of(&path)?;
+    let kind = if config.ext_sub.contains(&ext) {
+        AssetKind::Subtitle
+    } else if config.ext_audio.contains(&ext) {
+        AssetKind::Audio
+    } else {
+        return None;
     };
-    let Some(video_stem) = video_path.file_stem().and_then(|s| s.to_str()) else {
-        return assets;
-    };
+    let stem = path.file_stem()?.to_str()?.to_string();
+    Some(Candidate {
+        keys: item_keys(&stem),
+        generic: is_generic_name(&stem),
+        path,
+        kind,
+        origin,
+    })
+}
 
-    // Compute fingerprint from CLEANED stem (strips release tags so different
-    // release groups like YTS and DAWGS can still match)
-    let clean_video_stem = clean_stem_for_matching(video_stem);
-    let video_fingerprint = get_fingerprint(&clean_video_stem);
-    if video_fingerprint.is_empty() {
-        return assets;
-    }
-
-    // Directories to search: current folder and potential 'Subs' or 'Subtitles' subfolders
-    let mut search_dirs = vec![parent.to_path_buf()];
-
-    let subs_subfolder = parent.join("Subs");
-    if subs_subfolder.is_dir() {
-        search_dirs.push(subs_subfolder);
-    }
-
-    let subtitles_subfolder = parent.join("Subtitles");
-    if subtitles_subfolder.is_dir() {
-        search_dirs.push(subtitles_subfolder);
-    }
-
-    for dir in search_dirs {
-        let entries = match std::fs::read_dir(dir) {
-            Ok(e) => e,
-            Err(_) => continue,
+impl DirIndex {
+    pub fn build(dir: &Path, config: &Config) -> Self {
+        let mut index = DirIndex {
+            video_count: 0,
+            candidates: Vec::new(),
+        };
+        let Ok(entries) = fs::read_dir(dir) else {
+            return index;
         };
 
         for entry in entries.flatten() {
             let path = entry.path();
-            if path == *video_path || !path.is_file() {
-                continue;
-            }
-
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            let Some(item_stem) = path.file_stem().and_then(|s| s.to_str()) else {
-                continue;
-            };
-
-            let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
-                continue;
-            };
-            let ext = format!(".{}", ext.to_ascii_lowercase());
-
-            if !config.ext_sub.contains(&ext) && !config.ext_audio.contains(&ext) {
-                continue;
-            }
-
-            // Compute fingerprint from CLEANED stem for matching
-            let clean_item_stem = clean_stem_for_matching(item_stem);
-            let item_fingerprint = get_fingerprint(&clean_item_stem);
-
-            // Match if one cleaned fingerprint is contained in the other,
-            // or if they share a common SxxExx pattern
-            let is_match = if !item_fingerprint.is_empty()
-                && item_fingerprint.len() >= 5
-                && (item_fingerprint.contains(&video_fingerprint)
-                    || video_fingerprint.contains(&item_fingerprint))
+            if path.is_file() {
+                if extension_of(&path).is_some_and(|e| config.ext_video.contains(&e)) {
+                    index.video_count += 1;
+                } else if let Some(c) = candidate(path, config, Origin::Adjacent) {
+                    index.candidates.push(c);
+                }
+            } else if path.is_dir()
+                && path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(is_subs_folder)
             {
-                true
-            } else {
-                // Fallback: try stripping just the language suffix
-                let clean_stem = strip_lang_suffix(item_stem);
-                if clean_stem != item_stem {
-                    let clean_fp = get_fingerprint(&clean_stem);
-                    clean_fp.len() >= 5
-                        && (clean_fp.contains(&video_fingerprint)
-                            || video_fingerprint.contains(&clean_fp))
-                } else {
-                    false
-                }
-            } || {
-                // Also try SxxExx matching
-                if let (Some(v_cap), Some(i_cap)) =
-                    (SXXEXX_RE.captures(video_stem), SXXEXX_RE.captures(name))
-                {
-                    v_cap[1] == i_cap[1] && v_cap[2] == i_cap[2]
-                } else {
-                    false
-                }
-            };
+                index.add_subs_folder(&path, config);
+            }
+        }
 
-            if is_match {
-                if config.ext_sub.contains(&ext) {
-                    assets.subtitles.push(path);
-                } else if config.ext_audio.contains(&ext) {
-                    assets.audios.push(path);
+        index.candidates.sort_by(|a, b| a.path.cmp(&b.path));
+        index
+    }
+
+    fn add_subs_folder(&mut self, folder: &Path, config: &Config) {
+        let Ok(entries) = fs::read_dir(folder) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(c) = candidate(path, config, Origin::SubsRoot) {
+                    self.candidates.push(c);
+                }
+            } else if path.is_dir() {
+                let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                let folder_key = match_key(name);
+                let Ok(inner) = fs::read_dir(&path) else {
+                    continue;
+                };
+                for file in inner.flatten() {
+                    let file = file.path();
+                    if file.is_file() {
+                        if let Some(c) =
+                            candidate(file, config, Origin::NamedFolder(folder_key.clone()))
+                        {
+                            self.candidates.push(c);
+                        }
+                    }
                 }
             }
         }
     }
 
-    assets
+    /// Subtitles and audio tracks that belong to `video_path`.
+    ///
+    /// A file belongs to the video when its cleaned name matches, when it sits
+    /// in a `Subs/<video name>/` folder, or when it is a generic
+    /// `English.srt`-style file and the video is the only one in the folder.
+    pub fn assets_for(&self, video_path: &Path) -> FoundAssets {
+        let mut assets = FoundAssets::default();
+        let Some(stem) = video_path.file_stem().and_then(|s| s.to_str()) else {
+            return assets;
+        };
+        let video_key = match_key(stem);
+        if video_key.title.is_empty() {
+            return assets;
+        }
+
+        for c in &self.candidates {
+            if c.path == video_path {
+                continue;
+            }
+            let by_name = c.keys.iter().any(|k| keys_match(&video_key, k));
+            let by_folder = match &c.origin {
+                Origin::NamedFolder(folder_key) => keys_match(&video_key, folder_key),
+                _ => false,
+            };
+            let by_generic = c.generic && self.video_count == 1;
+
+            if by_name || by_folder || by_generic {
+                match c.kind {
+                    AssetKind::Subtitle => assets.subtitles.push(c.path.clone()),
+                    AssetKind::Audio => assets.audios.push(c.path.clone()),
+                }
+            }
+        }
+        assets
+    }
+}
+
+/// Scans the directory of the given video file for matching subtitles and audio tracks.
+pub fn find_matching_assets(video_path: &Path, config: &Config) -> FoundAssets {
+    match video_path.parent() {
+        Some(parent) => DirIndex::build(parent, config).assets_for(video_path),
+        None => FoundAssets::default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Temporary directory tree that is removed on drop.
+    struct Tree(PathBuf);
+
+    impl Tree {
+        fn new(label: &str) -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let dir = std::env::temp_dir().join(format!("mkvpm-{label}-{nanos}"));
+            fs::create_dir_all(&dir).unwrap();
+            Tree(dir)
+        }
+
+        fn file(&self, relative: &str) -> PathBuf {
+            let path = self.0.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, b"x").unwrap();
+            path
+        }
+    }
+
+    impl Drop for Tree {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn names(paths: &[PathBuf]) -> Vec<String> {
+        paths
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn similar_titles_do_not_steal_each_others_subtitles() {
+        let tree = Tree::new("alien");
+        let alien = tree.file("Alien.1979.mkv");
+        tree.file("Aliens.1986.eng.srt");
+        tree.file("Alien.1979.fin.srt");
+        let assets = find_matching_assets(&alien, &Config::default());
+        assert_eq!(names(&assets.subtitles), ["Alien.1979.fin.srt"]);
+    }
+
+    #[test]
+    fn each_episode_gets_only_its_own_files() {
+        let tree = Tree::new("episodes");
+        let e1 = tree.file("Show.S01E01.1080p.mkv");
+        let e2 = tree.file("Show.S01E02.1080p.mkv");
+        tree.file("Show.S01E01.fin.srt");
+        tree.file("Show.S01E02.fin.srt");
+        tree.file("Show.S01E02.eng.ac3");
+        let index = DirIndex::build(e1.parent().unwrap(), &Config::default());
+        assert_eq!(names(&index.assets_for(&e1).subtitles), ["Show.S01E01.fin.srt"]);
+        let second = index.assets_for(&e2);
+        assert_eq!(names(&second.subtitles), ["Show.S01E02.fin.srt"]);
+    }
+
+    #[test]
+    fn finds_subs_in_a_folder_named_after_the_video() {
+        let tree = Tree::new("subsfolder");
+        let video = tree.file("Show.S01E01.1080p.mkv");
+        tree.file("Show.S01E02.1080p.mkv");
+        tree.file("Subs/Show.S01E01.1080p/2_English.srt");
+        tree.file("Subs/Show.S01E02.1080p/2_English.srt");
+        let assets = find_matching_assets(&video, &Config::default());
+        assert_eq!(assets.subtitles.len(), 1);
+        assert!(assets.subtitles[0].to_string_lossy().contains("S01E01"));
+    }
+
+    #[test]
+    fn generic_subs_need_a_single_video() {
+        let single = Tree::new("single");
+        let movie = single.file("Movie.2015.mkv");
+        single.file("Subs/2_English.srt");
+        single.file("Subs/3_Finnish.srt");
+        let assets = find_matching_assets(&movie, &Config::default());
+        assert_eq!(assets.subtitles.len(), 2);
+
+        let many = Tree::new("many");
+        let movie = many.file("Movie.2015.mkv");
+        many.file("Other.2016.mkv");
+        many.file("Subs/2_English.srt");
+        assert!(find_matching_assets(&movie, &Config::default())
+            .subtitles
+            .is_empty());
+    }
 }
